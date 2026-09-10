@@ -1,5 +1,4 @@
 import asyncio
-import os
 import uuid
 import json
 from fastapi import FastAPI, Body, Request, status
@@ -8,11 +7,9 @@ from arq import create_pool
 from arq.connections import RedisSettings
 import redis.asyncio as aioredis
 from sse_starlette.sse import EventSourceResponse
+from config import settings
 
-app = FastAPI()
-
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+app = FastAPI(title="Autonomous Code Editor API", version="1.0.0")
 
 redis_client = None
 arq_pool = None
@@ -20,14 +17,14 @@ arq_pool = None
 async def get_redis_client():
     try:
         client = aioredis.from_url(
-            f"redis://{REDIS_HOST}:{REDIS_PORT}",
+            f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}",
             decode_responses=True,
-            socket_connect_timeout=0.5,
-            socket_timeout=0.5,
+            socket_connect_timeout=settings.REDIS_CONNECT_TIMEOUT,
+            socket_timeout=settings.REDIS_CONNECT_TIMEOUT,
             retry_on_timeout=False
         )
         await client.ping()
-        print(f"Connected to live Redis at {REDIS_HOST}:{REDIS_PORT}")
+        print(f"Connected to live Redis at {settings.REDIS_HOST}:{settings.REDIS_PORT}")
         return client
     except Exception:
         print("Live Redis server not reachable, using in-memory FakeRedis for local dev/testing.")
@@ -39,7 +36,7 @@ async def startup_event():
     global redis_client, arq_pool
     redis_client = await get_redis_client()
     try:
-        arq_pool = await create_pool(RedisSettings(host=REDIS_HOST, port=REDIS_PORT, conn_timeout=0.5))
+        arq_pool = await create_pool(RedisSettings(host=settings.REDIS_HOST, port=settings.REDIS_PORT, conn_timeout=settings.REDIS_CONNECT_TIMEOUT))
     except Exception:
         print("ARQ Redis pool initialization bypassed (using async background task runner).")
 
@@ -107,7 +104,6 @@ async def run_agent(payload: dict = Body(...)):
     if arq_pool:
         await arq_pool.enqueue_job('run_agent_task', task_id, prompt)
     else:
-        # Fallback in-process async execution for environments without external ARQ worker running
         from worker import run_agent_task
         asyncio.create_task(run_agent_task({'redis_client': redis_client}, task_id, prompt))
         
@@ -135,7 +131,6 @@ async def event_generator(request: Request):
     await pubsub.subscribe("agent_events")
     try:
         while True:
-            # CLIENT DISCONNECT CHECK:
             if await request.is_disconnected():
                 print("Client disconnected from /stream. Cleaning up SSE stream generator...")
                 break
@@ -148,7 +143,6 @@ async def event_generator(request: Request):
     except asyncio.CancelledError:
         print("SSE stream coroutine cancelled due to client disconnect.")
     finally:
-        # CLEANUP ON DISCONNECT: Unsubscribe Pub/Sub channel
         await pubsub.unsubscribe("agent_events")
         print("Unsubscribed from 'agent_events' Redis channel.")
 

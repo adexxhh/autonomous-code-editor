@@ -1,17 +1,14 @@
 import asyncio
 import json
-import os
 import redis.asyncio as aioredis
 from typing import TypedDict, List, Optional, Dict, Any
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 from ddgs import DDGS
 from langgraph.graph import StateGraph, END
 from arq.connections import RedisSettings
+from config import settings
 
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-
-# --- Pydantic Schemas for Tool Choice & Agent Output ---
+# Pydantic Schemas for Tool Choice & Agent Output
 class SearchToolInput(BaseModel):
     """Pydantic schema for DuckDuckGo search tool parameters."""
     query: str = Field(min_length=1, description="Cleaned search query string")
@@ -23,10 +20,10 @@ class AgentOutput(BaseModel):
     prompt: str
     status: str
     tool_input: SearchToolInput
-    steps_count: int = Field(ge=1, le=4, description="Total execution steps must not exceed 4")
+    steps_count: int = Field(ge=1, le=settings.MAX_WORKER_STEPS, description=f"Total execution steps must not exceed {settings.MAX_WORKER_STEPS}")
     final_answer: str
 
-# --- LangGraph Agent State Schema ---
+# LangGraph Agent State Schema
 class AgentState(TypedDict):
     task_id: str
     prompt: str
@@ -71,14 +68,12 @@ async def decision_node(state: AgentState) -> AgentState:
         await publish_event(redis, task_id, "DecisionNode", "cancelled", f"--> [DecisionNode] Task [{task_id[:8]}] INTERRUPTED by user.")
         return state
 
-    await publish_event(redis, task_id, "DecisionNode", "thought_start", f"--> [DecisionNode] Step {state['steps_count']}/4: Analyzing prompt: '{prompt}'")
+    await publish_event(redis, task_id, "DecisionNode", "thought_start", f"--> [DecisionNode] Step {state['steps_count']}/{settings.MAX_WORKER_STEPS}: Analyzing prompt: '{prompt}'")
     await asyncio.sleep(0.1)
 
-    # Formulate and validate SearchToolInput using Pydantic
     raw_query = prompt.strip(" ?!\"'").replace("search for", "").replace("search", "").strip()
     clean_query = raw_query if len(raw_query) > 0 else "FastAPI sse-starlette redis pubsub"
     
-    # Assert (1): Validate tool schema via Pydantic
     validated_tool_input = SearchToolInput(query=clean_query, max_results=3)
     state["tool_input"] = validated_tool_input.model_dump()
     state["query"] = validated_tool_input.query
@@ -105,7 +100,7 @@ async def tool_node(state: AgentState) -> AgentState:
         await publish_event(redis, task_id, "ToolNode", "cancelled", f"--> [ToolNode] Task [{task_id[:8]}] INTERRUPTED by user.")
         return state
 
-    await publish_event(redis, task_id, "ToolNode", "tool_start", f"--> [ToolNode] Step {state['steps_count']}/4: Executing DuckDuckGo tool...")
+    await publish_event(redis, task_id, "ToolNode", "tool_start", f"--> [ToolNode] Step {state['steps_count']}/{settings.MAX_WORKER_STEPS}: Executing DuckDuckGo tool...")
     await asyncio.sleep(0.1)
 
     results_str = ""
@@ -128,13 +123,12 @@ async def tool_node(state: AgentState) -> AgentState:
     state["tool_output"] = results_str
     state["status"] = "completed"
 
-    # Assert (3): Construct and validate AgentOutput Pydantic Schema without hallucinations
     final_output_model = AgentOutput(
         task_id=task_id,
         prompt=state["prompt"],
         status=state["status"],
         tool_input=SearchToolInput(**state["tool_input"]),
-        steps_count=state["steps_count"], # Must be <= 4
+        steps_count=state["steps_count"],
         final_answer=results_str
     )
     state["final_output"] = final_output_model.model_dump()
@@ -196,10 +190,10 @@ async def run_agent_task(ctx, task_id: str, prompt: str):
     if not redis:
         try:
             redis = aioredis.from_url(
-                f"redis://{REDIS_HOST}:{REDIS_PORT}",
+                f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}",
                 decode_responses=True,
-                socket_connect_timeout=0.5,
-                socket_timeout=0.5,
+                socket_connect_timeout=settings.REDIS_CONNECT_TIMEOUT,
+                socket_timeout=settings.REDIS_CONNECT_TIMEOUT,
                 retry_on_timeout=False
             )
             await redis.ping()
@@ -212,10 +206,10 @@ async def run_agent_task(ctx, task_id: str, prompt: str):
 async def startup(ctx):
     try:
         client = aioredis.from_url(
-            f"redis://{REDIS_HOST}:{REDIS_PORT}",
+            f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}",
             decode_responses=True,
-            socket_connect_timeout=0.5,
-            socket_timeout=0.5,
+            socket_connect_timeout=settings.REDIS_CONNECT_TIMEOUT,
+            socket_timeout=settings.REDIS_CONNECT_TIMEOUT,
             retry_on_timeout=False
         )
         await client.ping()
@@ -233,4 +227,4 @@ class WorkerSettings:
     functions = [run_agent_task]
     on_startup = startup
     on_shutdown = shutdown
-    redis_settings = RedisSettings(host=REDIS_HOST, port=REDIS_PORT, conn_timeout=0.5)
+    redis_settings = RedisSettings(host=settings.REDIS_HOST, port=settings.REDIS_PORT, conn_timeout=settings.REDIS_CONNECT_TIMEOUT)
