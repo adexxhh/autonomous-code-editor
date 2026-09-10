@@ -51,12 +51,14 @@ async def index():
 <body style="font-family:sans-serif; padding:2rem; max-width:800px; margin:0 auto;">
     <h2>Autonomous Code Editor Task Dispatcher</h2>
     <form onsubmit="runAgent(event)">
-        <input type="text" id="prompt" placeholder="Enter prompt (e.g. Refactor main.py)..." required style="padding:0.6rem; width:70%;">
+        <input type="text" id="prompt" placeholder="Enter prompt (e.g. Search for FastAPI SSE)..." required style="padding:0.6rem; width:60%;">
         <button type="submit" style="padding:0.6rem 1.2rem;">Run Agent Task</button>
     </form>
     
+    <div id="active-tasks" style="margin-top:1rem;"></div>
+
     <h3>Task Queue & Worker Status (HTTP 202 Stream):</h3>
-    <div id="log" style="background:#1e1e1e; color:#00ff66; font-family:monospace; padding:1rem; border-radius:6px; min-height:200px;"></div>
+    <div id="log" style="background:#1e1e1e; color:#00ff66; font-family:monospace; padding:1rem; border-radius:6px; min-height:220px;"></div>
 
     <script>
         const evtSource = new EventSource('/stream');
@@ -75,8 +77,19 @@ async def index():
                 body: JSON.stringify({prompt: input.value})
             });
             const data = await res.json();
-            document.getElementById('log').innerHTML += '<div style="color:#e6db74;">--> HTTP ' + res.status + ' Accepted: Task Enqueued ' + JSON.stringify(data) + '</div>';
+            const taskId = data.task_id;
+            
+            document.getElementById('log').innerHTML += '<div style="color:#e6db74;">--> HTTP 202 Enqueued: ' + taskId + '</div>';
+            
+            const tasksDiv = document.getElementById('active-tasks');
+            tasksDiv.innerHTML = `<button onclick="cancelTask('${taskId}')" style="background:#ff4d4d; color:white; padding:0.5rem 1rem; border:none; border-radius:4px; cursor:pointer;">Cancel Current Task (${taskId.slice(0,8)})</button>`;
             input.value = '';
+        }
+
+        async function cancelTask(taskId) {
+            const res = await fetch('/agent/' + taskId + '/cancel', { method: 'POST' });
+            const data = await res.json();
+            document.getElementById('log').innerHTML += '<div style="color:#ff6666;">--> Cancel Requested: ' + JSON.stringify(data) + '</div>';
         }
     </script>
 </body>
@@ -104,13 +117,25 @@ async def run_agent(payload: dict = Body(...)):
         "message": f"Task enqueued for processing: {prompt}"
     }
 
+@app.post("/agent/{task_id}/cancel")
+async def cancel_agent_task(task_id: str):
+    """
+    Registers an is_cancelled flag in Redis for the given task_id.
+    The LangGraph worker checks this flag prior to node/tool execution and halts cleanly.
+    """
+    await redis_client.set(f"task:{task_id}:cancelled", "1", ex=3600)
+    return {
+        "status": "cancellation_requested",
+        "task_id": task_id,
+        "message": f"Cancellation request registered for task {task_id}"
+    }
+
 async def event_generator(request: Request):
     pubsub = redis_client.pubsub()
     await pubsub.subscribe("agent_events")
     try:
         while True:
-            # 1. CLIENT DISCONNECT CHECK:
-            # Periodically poll request.is_disconnected() to detect if browser closed connection
+            # CLIENT DISCONNECT CHECK:
             if await request.is_disconnected():
                 print("Client disconnected from /stream. Cleaning up SSE stream generator...")
                 break
@@ -123,7 +148,7 @@ async def event_generator(request: Request):
     except asyncio.CancelledError:
         print("SSE stream coroutine cancelled due to client disconnect.")
     finally:
-        # 2. CLEANUP ON DISCONNECT: Unsubscribe Pub/Sub channel to prevent memory/socket leaks
+        # CLEANUP ON DISCONNECT: Unsubscribe Pub/Sub channel
         await pubsub.unsubscribe("agent_events")
         print("Unsubscribed from 'agent_events' Redis channel.")
 
