@@ -7,6 +7,10 @@
 
 A high-performance, decoupled asynchronous microservice engine for long-horizon AI coding agents. Built with FastAPI, Redis Pub/Sub, ARQ background workers, LangGraph state machines, Server-Sent Events (SSE), and Pydantic validation.
 
+<p align="center">
+  <img src="assets/demo.svg" alt="Asynchronous Agent Core Engine Execution & SSE Demo" width="850">
+</p>
+
 ---
 
 ## 🏗️ System Architecture
