@@ -59,3 +59,9 @@ REPAIR_API_KEY optionally supplies a gateway key. No paid API calls were made an
 ## Model-driven GPU probes
 
 [Repair probe runner](benchmarks/README.md) tests actual local model proposals on three disclosed tasks with bounded worktree verification. Fixtures were checked locally; CUDA model runs are pending. These probes cannot establish a general repair-success rate.
+
+## Remaining runtime checks
+
+[GPU model-repair notebook](benchmarks/colab_model_repairs.ipynb) runs actual local-model probes in a Drive-free disposable session. Live Redis/ARQ tests are in tests/test_redis_integration.py and have a Linux CI service job. Windows ARQ lifecycle uses unsupported POSIX signals, so this integration test is skipped locally. Both external runs remain pending; a TCP fake was insufficient to verify the real Redis service.
+
+[Continuation handoff](HANDOFF.md) records verified work, pending checks, the active Colab run and recovery steps.
