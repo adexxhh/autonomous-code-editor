@@ -62,6 +62,8 @@ REPAIR_API_KEY optionally supplies a gateway key. No paid API calls were made an
 
 ## Remaining runtime checks
 
-[GPU model-repair notebook](benchmarks/colab_model_repairs.ipynb) runs actual local-model probes in a Drive-free disposable session. Live Redis/ARQ tests are in tests/test_redis_integration.py and have a Linux CI service job. Windows ARQ lifecycle uses unsupported POSIX signals, so this integration test is skipped locally. Both external runs remain pending; a TCP fake was insufficient to verify the real Redis service.
+[GPU model-repair notebook](benchmarks/colab_model_repairs.ipynb) runs actual local-model probes in a Drive-free disposable session. Live Redis/ARQ tests are in tests/test_redis_integration.py and have a Linux CI service job. Windows ARQ lifecycle uses unsupported POSIX signals, so this integration test is skipped locally. The real Redis/ARQ job passed on GitHub Actions; actual-model GPU probes remain pending. The Windows TCP fake was not used as real Redis evidence.
 
 [Continuation handoff](HANDOFF.md) records verified work, pending checks, the active Colab run and recovery steps.
+
+Verified [GitHub Actions run](https://github.com/adexxhh/autonomous-code-editor/actions/runs/39961303101) passed. Job and step evidence is saved in [github-actions.json](docs/evidence/github-actions.json).
