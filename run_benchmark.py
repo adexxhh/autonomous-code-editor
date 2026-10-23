@@ -9,15 +9,18 @@ import main
 
 async def run_benchmark():
     main.redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    class NoopQueue:
+        async def enqueue_job(self, *args): pass
+    main.arq_pool = NoopQueue()
     
     process = psutil.Process(os.getpid())
     mem_before = process.memory_info().rss / (1024 * 1024)
     
     print("==================================================================")
-    print("  FASTAPI SSE GATEWAY 50-CONCURRENT USER BENCHMARK LOAD SIMULATION")
+    print("  FASTAPI SSE GATEWAY IN-PROCESS DISPATCH MICROBENCHMARK (NOT NETWORK/SSE/COMPLETED JOBS)")
     print("==================================================================")
     print(f"Initial Memory Usage: {mem_before:.2f} MB")
-    print("Simulating 50 concurrent users requesting jobs & holding SSE streams open...")
+    print("Simulating 50 request coroutines; mock queue, no workers, no SSE or network...")
     
     transport = httpx.ASGITransport(app=main.app)
     async_client = httpx.AsyncClient(transport=transport, base_url="http://test", timeout=2.0)
@@ -62,7 +65,7 @@ async def run_benchmark():
     print(f"Throughput (RPS)         : {rps:.2f} req/sec")
     print(f"p95 Response Time        : {p95:.2f} ms")
     print(f"Memory (Before Load)     : {mem_before:.2f} MB")
-    print(f"Memory (Peak Under Load) : {mem_after:.2f} MB (Delta: +{mem_diff:.2f} MB)")
+    print(f"Memory (After Load) : {mem_after:.2f} MB (Delta: +{mem_diff:.2f} MB)")
     print("------------------------------------------------------------------")
     
     await async_client.aclose()

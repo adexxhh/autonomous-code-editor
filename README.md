@@ -1,124 +1,61 @@
-# Asynchronous Agent Microservice Core Engine
+# Tree-sitter Editor + Async Search Workflow
 
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.141-009688.svg)](https://fastapi.tiangolo.com/)
-[![Docker](https://img.shields.io/badge/Docker-Multi--stage-2496ED.svg)](https://www.docker.com/)
-[![Pytest](https://img.shields.io/badge/Pytest-Passing%20(5%2F5)-success.svg)](https://docs.pytest.org/)
+Two explicit components: a real deterministic Python function editor and a separate async search workflow. A bounded model-proposal/verification loop is available through a configured model gateway; model capability has not been benchmarked.
 
-A high-performance, decoupled asynchronous microservice engine for long-horizon AI coding agents. Built with FastAPI, Redis Pub/Sub, ARQ background workers, LangGraph state machines, Server-Sent Events (SSE), and Pydantic validation.
+## AST editing
+ast_editor.py selects one top-level Python function with Tree-sitter, replaces its byte span and validates the result with both Tree-sitter and Python's parser. It preserves unrelated code and rejects ambiguous functions, invalid replacements, path traversal and symlinks.
 
-<p align="center">
-  <img src="assets/demo.svg" alt="Asynchronous Agent Core Engine Execution & SSE Demo" width="850">
-</p>
+evaluate_in_worktree applies a candidate in a disposable detached Git worktree, optionally runs an explicit verification command, returns the diff/output and removes the worktree. The original checkout is unchanged.
 
----
+~~~sh
+pip install -r requirements.txt
+python ast_editor.py --repo /path/to/repo --file example.py --function add --replacement candidate.txt
+python -m scripts.demo_scenario
+python -m pytest -q
+~~~
+The CLI previews a diff. Worktree verification requires a clean committed source. **Git isolation is not an OS security sandbox.** Verification runs with your user privileges; do not execute untrusted code on a host with secrets.
 
-## 🏗️ System Architecture
+## Async workflow
+FastAPI dispatches a fixed two-node LangGraph search workflow through Redis/ARQ.
+- Search calls run off the event loop with a timeout.
+- Provider failures return failed states instead of invented results.
+- Events use task-scoped channels and random per-task capability tokens.
+- Last-event snapshots support reconnect/status retrieval, not complete event replay.
+- Cancellation is cooperative; it does not kill an active network thread.
 
-```mermaid
-graph TD
-    Client[Client / IDE Frontend] -->|1. POST /agent/run| API[FastAPI Web Gateway]
-    API -->|2. HTTP 202 Accepted + task_id| Client
-    API -->|3. Push Task to ARQ Queue| RedisQueue[(Redis Task Queue)]
-    
-    RedisQueue -->|4. Dequeue Job| Worker[ARQ Background Worker]
-    
-    subgraph LangGraph Pipeline
-        Worker --> Node1[Node 1: DecisionNode]
-        Node1 -->|Format DDG Query| Node2[Node 2: ToolNode]
-        Node2 -->|DuckDuckGo Search| DDG[DDGS API]
-    end
-    
-    Worker -->|5. Stream Thought Tokens & Tool Output| RedisPubSub[(Redis Pub/Sub: agent_events)]
-    RedisPubSub -->|6. Yield SSE Messages| StreamEndpoint[GET /stream]
-    StreamEndpoint -->|7. Live SSE Stream| Client
-    
-    subgraph Out-of-band Cancellation Interrupt
-        Client -->|POST /agent/task_id/cancel| CancelAPI[Cancel Endpoint]
-        CancelAPI -->|Set task:id:cancelled| RedisQueue
-        Worker -.->|Check is_cancelled before Node/Tool| RedisQueue
-    end
-```
+Run docker compose up --build for the real Redis/ARQ configuration. For a single-process local demo, explicitly set AGENT_DEMO_MODE=1 and REDIS_HOST=localhost, then run uvicorn main:app --host 127.0.0.1 --port 8000.
+POST /agent/run returns task_id and task_token. Status/cancel require X-Task-Token. SSE takes task_id and token query parameters; keep capability URLs out of logs.
+No user-account authentication, admission control or full durable event history is provided. Docker/Redis deployment was not verified on this host.
 
----
+## Evidence
+The CPU suite passed **12 tests**, including Unicode edits, invalid paths, successful/failed real Git-worktree checks, task authorization and provider failure.
 
-## ⚡ The Core Problem Solved
+The old **45% token reduction, 92% fix rate, 446 RPS and 0.88 ms** showcase claims are withdrawn.
+- token_comparison uses an actual tokenizer, but measures only replacement-output payload versus full-file output for one input. It excludes prompts, retries and reasoning.
+- run_benchmark.py measures **in-process dispatch to a mock queue**. It does not open SSE streams or execute workers.
+- No representative bug-repair dataset has been evaluated; do not infer a fix rate from unit-test success.
 
-Synchronous HTTP request-response architectures fail for long-horizon autonomous AI agents for three fundamental reasons:
 
-1. **504 Gateway Timeouts & Connection Drops**: Complex agent execution pipelines (planning, static analysis, code generation, test execution) take anywhere from 10 seconds to several minutes. Synchronous HTTP connections drop or time out at load balancers (Cloudflare, NGINX, AWS ALB).
-2. **Worker Thread Starvation & CPU Saturation**: Holding HTTP worker threads open while an AI agent waits for LLM API responses or terminal execution locks up server threads, quickly reducing server throughput to zero.
-3. **Lack of Resumable & Cancellable State Management**: Without an out-of-band task queue and event bus, user cancellations leave orphan background processes running indefinitely, consuming expensive LLM tokens and CPU cycles.
+## Demonstration
+![Verified terminal demonstration](assets/demo.gif)
 
----
+[Static PNG](assets/demo.png) | [Raw commands and output](assets/demo-transcript.json)
 
-## 📊 Verified Benchmark Results
+These assets are condensed terminal replays rendered from actual subprocess output. They are not screenshots of a production deployment.
+Regenerate: install requirements-demo.txt, then run python scripts/render_demo.py.
 
-Load test simulation executed with 50 concurrent active users holding persistent SSE streams while firing continuous agent task requests:
+[Engineering changes and ownership exercises](OWNERSHIP.md)
 
-| Benchmark Metric | Verified Value | Notes / Description |
-| :--- | :--- | :--- |
-| **Concurrent Active Streams** | **50 Users** | Persistent open SSE stream connections |
-| **Total Requests Executed** | **1,346 Req** | High-concurrency task dispatch |
-| **Throughput (RPS)** | **446.50 req/sec** | Serves over 440 req/sec concurrently |
-| **Ingestion Latency (p95)** | **0.88 ms** | `POST /agent/run` responds in < 1 ms |
-| **Baseline Memory Usage** | **57.19 MB** | Initial idle memory footprint |
-| **Peak Memory Under Load** | **139.93 MB** | Delta: +82.73 MB (~1.65 MB per open stream connection) |
 
----
+## Bounded repair loop
+repair_agent.py requests one function replacement, validates it, runs trusted verification in a detached worktree and sends real failure feedback to the next attempt. Attempts are bounded (default 3, maximum 5); the original checkout is never modified automatically. Passing tests produces a reviewable candidate diff, not a correctness guarantee.
 
-## 🚀 Local Quickstart
+Configure a model gateway and run:
+~~~sh
+python repair_agent.py --repo /path/to/clean/repo --file example.py --function add --task "Fix addition" --base-url http://localhost:11434/v1 --model your-local-model --output result.json --allow-local-execution --verify python -m pytest -q
+~~~
+REPAIR_API_KEY optionally supplies a gateway key. No paid API calls were made and no model gateway was available here. Tests inject deterministic proposals and exercise actual failed/successful subprocess verification and feedback. The default context budget is 50,000 characters; max feedback is 4,000 characters, max completion request is 2,048 tokens. This is not a total token/cost budget.
 
-Get the entire stack (FastAPI Gateway, ARQ Worker, and Redis) running locally in seconds with Docker Compose:
+## Model-driven GPU probes
 
-```bash
-# 1. Clone the repository
-git clone https://github.com/adexxhh/autonomous-code-editor.git
-cd autonomous-code-editor
-
-# 2. Configure environment variables
-cp .env.example .env
-
-# 3. Spin up the container stack
-docker compose up --build
-```
-
-Access the interactive web UI at **[http://localhost:8000](http://localhost:8000)**.
-
----
-
-## 🔌 API Endpoint Specification
-
-### 1. `POST /agent/run`
-Submits a task to the background worker queue. Returns **HTTP 202 Accepted** immediately.
-* **Request Payload**: `{"prompt": "Search for FastAPI SSE best practices"}`
-* **Response (HTTP 202)**:
-```json
-{
-  "status": "queued",
-  "task_id": "a3c528c2-379c-4ac8-9be4-3f2aa8600bb6",
-  "message": "Task enqueued for processing: Search for FastAPI SSE best practices"
-}
-```
-
-### 2. `GET /stream`
-Server-Sent Events (SSE) endpoint streaming real-time thought tokens, tool execution outputs, and pipeline completion status. Handles client disconnects cleanly without resource leaks.
-
-### 3. `POST /agent/{task_id}/cancel`
-Out-of-band cancellation trigger. Registers an `is_cancelled` flag in Redis. The LangGraph worker interrupts execution before the next node/tool run and emits a final `{"status": "cancelled"}` event.
-
----
-
-## 🧪 Evaluation Test Suite
-
-The repository includes a dedicated `pytest` evaluation test suite ([tests/test_agent_evals.py](file:///c:/Users/Asus/OneDrive/Desktop/autonomous-code-editor/tests/test_agent_evals.py)) verifying 5 edge-case prompts:
-
-```bash
-# Run pytest evaluation suite
-.venv\Scripts\python -m pytest tests/test_agent_evals.py -v
-```
-
-### Strict Assertions Enforced:
-1. **Tool Schema Selection**: Validates tool inputs against Pydantic `SearchToolInput` schema.
-2. **Step Bound Guarantee**: Asserts execution steps `steps_count <= 4`.
-3. **Zero Schema Hallucinations**: Validates outputs strictly against Pydantic `AgentOutput` schema.
+[Repair probe runner](benchmarks/README.md) tests actual local model proposals on three disclosed tasks with bounded worktree verification. Fixtures were checked locally; CUDA model runs are pending. These probes cannot establish a general repair-success rate.

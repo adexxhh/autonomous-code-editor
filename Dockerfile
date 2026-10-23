@@ -17,22 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python -m venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Install production dependencies
-RUN pip install --no-cache-dir \
-    fastapi \
-    uvicorn \
-    sse-starlette \
-    redis \
-    fakeredis \
-    httpx \
-    arq \
-    langgraph \
-    langchain-core \
-    ddgs \
-    pydantic \
-    pydantic-settings \
-    pytest \
-    pytest-asyncio
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # ==============================================================================
 # Stage 2: Production Runner Stage (Non-Root Execution)

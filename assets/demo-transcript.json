@@ -1,0 +1,17 @@
+{
+  "kind": "condensed terminal replay from real runs",
+  "commands": [
+    {
+      "command": "python -m scripts.demo_scenario",
+      "exit_code": 0,
+      "stdout": "Tree-sitter selects top-level function: add\n--- example.py\n+++ example.py\n@@ -3,4 +3,4 @@\n     return 99\n \n def add(a,b):\n-    return a-b\n+    return a+b\n\nIsolated subprocess assertion passed: True\nOriginal checkout unchanged: True\nIncorrect candidate rejected: True\nToken measurement (one fixture, output payload only):\n{\n  \"encoding\": \"cl100k_base\",\n  \"whole_file_output_tokens\": 23,\n  \"replacement_output_tokens\": 9,\n  \"output_token_reduction_pct\": 60.869565217391305,\n  \"scope\": \"output payload only; excludes prompts, retries, and reasoning\"\n}\n",
+      "stderr": ""
+    },
+    {
+      "command": "python -m pytest -q --disable-warnings",
+      "exit_code": 0,
+      "stdout": "............                                                             [100%]\n12 passed in 4.18s\n",
+      "stderr": ""
+    }
+  ]
+}

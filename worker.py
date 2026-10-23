@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import redis.asyncio as aioredis
 from typing import TypedDict, List, Optional, Dict, Any
 from pydantic import BaseModel, Field
@@ -46,7 +47,8 @@ async def publish_event(redis_client, task_id: str, node_name: str, status_str: 
         "status": status_str,
         "message": message
     })
-    await redis_client.publish("agent_events", payload)
+    await redis_client.set(f"task:{task_id}:last_event", payload, ex=86400)
+    await redis_client.publish(f"agent_events:{task_id}", payload)
 
 async def is_task_cancelled(redis_client, task_id: str) -> bool:
     """Checks Redis for the is_cancelled flag for the given task_id."""
@@ -105,14 +107,19 @@ async def tool_node(state: AgentState) -> AgentState:
 
     results_str = ""
     try:
-        results = list(DDGS().text(query, max_results=3))
+        results = await asyncio.wait_for(asyncio.to_thread(lambda: list(DDGS().text(query, max_results=3))), timeout=15)
         if results:
             snippets = [f"• {r.get('title')}: {r.get('body')}" for r in results]
             results_str = "\n".join(snippets)
         else:
             results_str = f"No results found for query '{query}'."
     except Exception as e:
-        results_str = f"DuckDuckGo Search result for '{query}'"
+        state["status"] = "failed"
+        state["final_output"] = AgentOutput(task_id=task_id, prompt=state["prompt"],
+            status="failed", tool_input=SearchToolInput(**state["tool_input"]),
+            steps_count=state["steps_count"], final_answer="Search provider failed; retry later.").model_dump()
+        await publish_event(redis, task_id, "ToolNode", "failed", "Search provider failed")
+        return state
 
     # Interrupt Check 3
     if await is_task_cancelled(redis, task_id):
@@ -198,6 +205,8 @@ async def run_agent_task(ctx, task_id: str, prompt: str):
             )
             await redis.ping()
         except Exception:
+            if os.getenv("AGENT_DEMO_MODE") != "1":
+                raise
             import fakeredis.aioredis
             redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
@@ -215,6 +224,8 @@ async def startup(ctx):
         await client.ping()
         ctx['redis_client'] = client
     except Exception:
+        if os.getenv("AGENT_DEMO_MODE") != "1":
+            raise
         import fakeredis.aioredis
         ctx['redis_client'] = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
